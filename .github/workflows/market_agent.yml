@@ -1,0 +1,29 @@
+name: Market Intelligence Agent
+
+on:
+  schedule:
+    - cron: "0 9 * * 1-5"
+    - cron: "0 11 * * 6,0"
+  workflow_dispatch:
+
+jobs:
+  send-market-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Market Agent
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+        run: python market_agent.py
