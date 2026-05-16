@@ -112,14 +112,36 @@ def analyze_with_claude(news, market):
             market_lines.append(name + ": " + str(round(d["price"], 2)) + " " + d["currency"] + " (" + arrow + " " + str(round(abs(d["pct"]), 2)) + "%)")
         else:
             market_lines.append(name + ": no disponible")
+
+    news_titles = [a["title"] for a in news[:8]]
     news_lines = []
     for i, a in enumerate(news, 1):
         news_lines.append(str(i) + ". [" + a["source"] + "] " + a["title"])
+
     today = datetime.now(ARGENTINA_TZ).strftime("%A %d de %B de %Y")
-    prompt = "Eres un analista financiero senior. Hoy es " + today + " (Argentina).\nIMPORTANTE: responde en texto plano, SIN asteriscos, SIN markdown, SIN simbolos especiales.\n\n=== MERCADO ===\n" + "\n".join(market_lines) + "\n\n=== NOTICIAS ===\n" + "\n".join(news_lines) + "\n\nEscribe el informe con estos titulos exactos:\n\nRESUMEN EJECUTIVO:\n(3-4 oraciones)\n\nMERCADOS GLOBALES:\n(analisis de indices)\n\nCOMMODITIES Y DIVISAS:\n(oro, petroleo, dolar, crypto)\n\nPERSPECTIVA PARA LA JORNADA:\n(probabilidad suba/baja)\n\nCARTERA PERSONAL:\n(YPF, ASML, NU, MUX, AVGO - una linea cada uno)\n\nPUNTO DE ATENCION:\n(1 evento clave)\n\nOPORTUNIDADES DEL DIA:\nLista exactamente 5 activos con probabilidad de suba. Formato para cada uno:\nSIMBOLO | NOMBRE | justificacion en 1 oracion\n\nMaximo 800 palabras. Sin asteriscos ni markdown."
+
+    prompt = ("Eres un analista financiero senior. Hoy es " + today + " (Argentina).\n"
+        "IMPORTANTE: responde en texto plano, SIN asteriscos, SIN markdown, SIN simbolos especiales.\n\n"
+        "=== MERCADO ===\n" + "\n".join(market_lines) + "\n\n"
+        "=== NOTICIAS ===\n" + "\n".join(news_lines) + "\n\n"
+        "Escribe el informe con estos titulos exactos:\n\n"
+        "RESUMEN EJECUTIVO:\n(3-4 oraciones)\n\n"
+        "MERCADOS GLOBALES:\n(analisis de indices)\n\n"
+        "COMMODITIES Y DIVISAS:\n(oro, petroleo, dolar, crypto)\n\n"
+        "PERSPECTIVA PARA LA JORNADA:\n(probabilidad suba/baja)\n\n"
+        "CARTERA PERSONAL:\n(YPF, ASML, NU, MUX, AVGO - una linea cada uno)\n\n"
+        "PUNTO DE ATENCION:\n(1 evento clave)\n\n"
+        "OPORTUNIDADES DEL DIA:\n"
+        "Lista exactamente 5 activos con probabilidad de suba. Formato para cada uno:\n"
+        "SIMBOLO | NOMBRE | justificacion en 1 oracion\n\n"
+        "TITULOS TRADUCIDOS:\n"
+        "Traduce al espanol exactamente estos " + str(len(news_titles)) + " titulos de noticias, uno por linea, en el mismo orden, sin numeracion:\n"
+        + "\n".join(news_titles) + "\n\n"
+        "Maximo 900 palabras. Sin asteriscos ni markdown.")
+
     body = json.dumps({
         "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 1500,
+        "max_tokens": 1800,
         "messages": [{"role": "user", "content": prompt}]
     }).encode()
     req = urllib.request.Request(
@@ -136,21 +158,35 @@ def analyze_with_claude(news, market):
         data = json.loads(resp.read())
     return data["content"][0]["text"]
 
-def parse_sections(analysis):
+def parse_sections(analysis, news):
     sections = ["RESUMEN EJECUTIVO", "MERCADOS GLOBALES", "COMMODITIES Y DIVISAS",
                 "PERSPECTIVA PARA LA JORNADA", "CARTERA PERSONAL", "PUNTO DE ATENCION"]
     main_html = ""
     opp_rows = ""
+    translated_titles = []
     opp_count = 0
     in_opps = False
+    in_translations = False
 
     for line in analysis.split("\n"):
         line = clean(line)
         if not line:
             continue
+
+        if "TITULOS TRADUCIDOS" in line.upper():
+            in_opps = False
+            in_translations = True
+            continue
+
         if "OPORTUNIDADES DEL DIA" in line.upper():
             in_opps = True
+            in_translations = False
             continue
+
+        if in_translations:
+            translated_titles.append(line)
+            continue
+
         if in_opps:
             if "|" in line and opp_count < 5:
                 parts = [p.strip() for p in line.split("|")]
@@ -165,9 +201,12 @@ def parse_sections(analysis):
                 else:
                     continue
                 activo = simbolo + (" - " + nombre if nombre else "")
-                opp_rows += "<tr style='border-bottom:1px solid #bbf7d0'><td style='padding:10px 14px;font-weight:700;color:#15803d;white-space:nowrap;vertical-align:top'>" + activo + "</td><td style='padding:10px 14px;color:#334155;line-height:1.6'>" + justif + "</td></tr>"
+                opp_rows += ("<tr style='border-bottom:1px solid #bbf7d0'>"
+                    "<td style='padding:10px 14px;font-weight:700;color:#15803d;white-space:nowrap;vertical-align:top'>" + activo + "</td>"
+                    "<td style='padding:10px 14px;color:#334155;line-height:1.6'>" + justif + "</td></tr>")
                 opp_count += 1
             continue
+
         is_header = False
         for s in sections:
             if s in line.upper():
@@ -181,25 +220,71 @@ def parse_sections(analysis):
     if not opp_rows:
         opp_rows = "<tr><td colspan='2' style='padding:10px 14px;color:#64748b'>No se generaron oportunidades hoy.</td></tr>"
 
-    return main_html, opp_rows
+    # Combinar titulos traducidos con URLs originales
+    news_items = ""
+    for i, article in enumerate(news[:8]):
+        if i < len(translated_titles) and translated_titles[i].strip():
+            display_title = translated_titles[i].strip()
+        else:
+            display_title = article["title"]
+        news_items += ("<li style='margin-bottom:10px;font-size:13px'>"
+            "<a href='" + article["url"] + "' style='color:#2563eb;font-weight:600;text-decoration:none'>" + display_title + "</a>"
+            "<br><span style='color:#64748b;font-size:12px'>" + article["source"] + "</span></li>")
+
+    return main_html, opp_rows, news_items
 
 def build_email(analysis, market, news):
     now = datetime.now(ARGENTINA_TZ)
     date_str = now.strftime("%d/%m/%Y")
     time_str = now.strftime("%H:%M")
+
     rows = ""
     for name, d in market.items():
         if d:
             color = "#16a34a" if d["change"] >= 0 else "#dc2626"
             bg    = "#f0fdf4" if d["change"] >= 0 else "#fef2f2"
             arrow = "▲" if d["change"] >= 0 else "▼"
-            rows += "<tr style='border-bottom:1px solid #e2e8f0'><td style='padding:7px 14px;font-weight:600;color:#1e293b;font-size:13px'>" + name + "</td><td style='padding:7px 14px;text-align:right;color:#1e293b;font-size:13px'>" + str(round(d["price"], 2)) + "</td><td style='padding:7px 14px;text-align:right;color:" + color + ";font-weight:700;background:" + bg + ";font-size:13px'>" + arrow + " " + str(round(abs(d["pct"]), 2)) + "%</td></tr>"
-    news_items = ""
-    for a in news[:8]:
-        news_items += "<li style='margin-bottom:10px;font-size:13px'><a href='" + a["url"] + "' style='color:#2563eb;font-weight:600;text-decoration:none'>" + a["title"] + "</a><br><span style='color:#64748b;font-size:12px'>" + a["source"] + "</span></li>"
-    main_html, opp_rows = parse_sections(analysis)
+            rows += ("<tr style='border-bottom:1px solid #e2e8f0'>"
+                "<td style='padding:7px 14px;font-weight:600;color:#1e293b;font-size:13px'>" + name + "</td>"
+                "<td style='padding:7px 14px;text-align:right;color:#1e293b;font-size:13px'>" + str(round(d["price"], 2)) + "</td>"
+                "<td style='padding:7px 14px;text-align:right;color:" + color + ";font-weight:700;background:" + bg + ";font-size:13px'>" + arrow + " " + str(round(abs(d["pct"]), 2)) + "%</td></tr>")
+
+    main_html, opp_rows, news_items = parse_sections(analysis, news)
     subject = "Reporte de Mercados - " + date_str
-    html = "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:16px 0'><div style='max-width:620px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.10)'><div style='background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);padding:28px 32px'><div style='font-size:11px;color:#94a3b8;letter-spacing:3px;text-transform:uppercase;margin-bottom:6px'>Reporte Diario de Mercados</div><div style='font-size:24px;font-weight:700;color:#fff;margin-bottom:4px'>Market Intelligence</div><div style='font-size:13px;color:#7dd3fc'>" + date_str + " &middot; " + time_str + " hs (Argentina)</div></div><div style='padding:24px 32px 0'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Snapshot de Mercado</div><table style='width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0'><thead><tr style='background:#e2e8f0'><th style='padding:8px 14px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase'>Activo</th><th style='padding:8px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Precio</th><th style='padding:8px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Variacion</th></tr></thead><tbody>" + rows + "</tbody></table></div><div style='padding:24px 32px'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Analisis y Perspectivas</div><div style='background:#f8fafc;border-left:4px solid #2563eb;border-radius:0 8px 8px 0;padding:18px 22px'>" + main_html + "</div></div><div style='padding:0 32px 24px'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Oportunidades del Dia</div><table style='width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0'><thead><tr style='background:#dcfce7'><th style='padding:8px 14px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase;white-space:nowrap'>Activo</th><th style='padding:8px 14px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase'>Justificacion</th></tr></thead><tbody>" + opp_rows + "</tbody></table><p style='font-size:11px;color:#94a3b8;margin:8px 0 0'>Orientativo. No constituye recomendacion de inversion.</p></div><div style='padding:0 32px 24px'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Noticias Destacadas</div><ul style='padding-left:18px;margin:0'>" + news_items + "</ul></div><div style='background:#f8fafc;padding:18px 32px;text-align:center;border-top:1px solid #e2e8f0'><p style='font-size:11px;color:#94a3b8;margin:0'>Generado por Market Intelligence Agent &middot; Powered by Claude AI<br>Este reporte es informativo y no constituye asesoramiento financiero.</p></div></div></body></html>"
+
+    html = ("<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:16px 0'>"
+        "<div style='max-width:620px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.10)'>"
+        "<div style='background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);padding:28px 32px'>"
+        "<div style='font-size:11px;color:#94a3b8;letter-spacing:3px;text-transform:uppercase;margin-bottom:6px'>Reporte Diario de Mercados</div>"
+        "<div style='font-size:24px;font-weight:700;color:#fff;margin-bottom:4px'>Market Intelligence</div>"
+        "<div style='font-size:13px;color:#7dd3fc'>" + date_str + " &middot; " + time_str + " hs (Argentina)</div></div>"
+        "<div style='padding:24px 32px 0'>"
+        "<div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Snapshot de Mercado</div>"
+        "<table style='width:100%;border-collapse:collapse;border:1px solid #e2e8f0'>"
+        "<thead><tr style='background:#e2e8f0'>"
+        "<th style='padding:8px 14px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase'>Activo</th>"
+        "<th style='padding:8px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Precio</th>"
+        "<th style='padding:8px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Variacion</th>"
+        "</tr></thead><tbody>" + rows + "</tbody></table></div>"
+        "<div style='padding:24px 32px'>"
+        "<div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Analisis y Perspectivas</div>"
+        "<div style='background:#f8fafc;border-left:4px solid #2563eb;border-radius:0 8px 8px 0;padding:18px 22px'>" + main_html + "</div></div>"
+        "<div style='padding:0 32px 24px'>"
+        "<div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Oportunidades del Dia</div>"
+        "<table style='width:100%;border-collapse:collapse;border:1px solid #bbf7d0'>"
+        "<thead><tr style='background:#dcfce7'>"
+        "<th style='padding:8px 14px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase;white-space:nowrap'>Activo</th>"
+        "<th style='padding:8px 14px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase'>Justificacion</th>"
+        "</tr></thead><tbody>" + opp_rows + "</tbody></table>"
+        "<p style='font-size:11px;color:#94a3b8;margin:8px 0 0'>Orientativo. No constituye recomendacion de inversion.</p></div>"
+        "<div style='padding:0 32px 24px'>"
+        "<div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Noticias Destacadas</div>"
+        "<ul style='padding-left:18px;margin:0'>" + news_items + "</ul></div>"
+        "<div style='background:#f8fafc;padding:18px 32px;text-align:center;border-top:1px solid #e2e8f0'>"
+        "<p style='font-size:11px;color:#94a3b8;margin:0'>Generado por Market Intelligence Agent &middot; Powered by Claude AI<br>"
+        "Este reporte es informativo y no constituye asesoramiento financiero.</p>"
+        "</div></div></body></html>")
+
     return subject, html
 
 def send_email(subject, html):
