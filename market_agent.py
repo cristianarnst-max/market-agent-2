@@ -16,6 +16,12 @@ NEWS_API_KEY    = os.environ["NEWS_API_KEY"]
 
 ARGENTINA_TZ = timezone(timedelta(hours=-3))
 
+def clean(text):
+    while "**" in text:
+        text = text.replace("**", "", 2)
+    text = text.replace("*", "")
+    return text.strip()
+
 def fetch_news():
     queries = [
         "stock market wall street",
@@ -102,37 +108,15 @@ def analyze_with_claude(news, market):
     market_lines = []
     for name, d in market.items():
         if d:
-            arrow = "up" if d["change"] >= 0 else "down"
-            market_lines.append(name + ": " + str(round(d["price"], 2)) + " " + d["currency"] + " " + arrow + " " + str(round(abs(d["pct"]), 2)) + "%")
+            arrow = "sube" if d["change"] >= 0 else "baja"
+            market_lines.append(name + ": " + str(round(d["price"], 2)) + " " + d["currency"] + " (" + arrow + " " + str(round(abs(d["pct"]), 2)) + "%)")
         else:
-            market_lines.append(name + ": datos no disponibles")
+            market_lines.append(name + ": no disponible")
     news_lines = []
     for i, a in enumerate(news, 1):
-        news_lines.append(str(i) + ". [" + a["source"] + "] " + a["title"] + "\n   " + a["description"])
+        news_lines.append(str(i) + ". [" + a["source"] + "] " + a["title"])
     today = datetime.now(ARGENTINA_TZ).strftime("%A %d de %B de %Y")
-    prompt = """Eres un analista financiero senior. Hoy es """ + today + """ (hora Argentina).
-
-=== DATOS DE MERCADO ===
-""" + "\n".join(market_lines) + """
-
-=== NOTICIAS RECIENTES ===
-""" + "\n".join(news_lines) + """
-
-Redacta un informe diario en ESPAÑOL con estas secciones exactas, usando estos encabezados literales:
-
-1. RESUMEN EJECUTIVO
-2. MERCADOS GLOBALES
-3. COMMODITIES Y DIVISAS
-4. PERSPECTIVA PARA LA JORNADA
-5. CARTERA PERSONAL (YPF, ASML, NU, MUX, AVGO)
-6. PUNTO DE ATENCION
-7. OPORTUNIDADES DEL DIA
-
-Para la seccion 7, lista exactamente 5 activos (acciones, ETFs, commodities o crypto) con probabilidad de suba inminente hoy. Formato para cada uno:
-SIMBOLO - NOMBRE: justificacion concisa de 1-2 oraciones basada en technicos o fundamentals recientes.
-
-Se directo, usa datos concretos. Maximo 800 palabras en total."""
-
+    prompt = "Eres un analista financiero senior. Hoy es " + today + " (Argentina).\nIMPORTANTE: responde en texto plano, SIN asteriscos, SIN markdown, SIN simbolos especiales.\n\n=== MERCADO ===\n" + "\n".join(market_lines) + "\n\n=== NOTICIAS ===\n" + "\n".join(news_lines) + "\n\nEscribe el informe con estos titulos exactos:\n\nRESUMEN EJECUTIVO:\n(3-4 oraciones)\n\nMERCADOS GLOBALES:\n(analisis de indices)\n\nCOMMODITIES Y DIVISAS:\n(oro, petroleo, dolar, crypto)\n\nPERSPECTIVA PARA LA JORNADA:\n(probabilidad suba/baja)\n\nCARTERA PERSONAL:\n(YPF, ASML, NU, MUX, AVGO - una linea cada uno)\n\nPUNTO DE ATENCION:\n(1 evento clave)\n\nOPORTUNIDADES DEL DIA:\nLista exactamente 5 activos con probabilidad de suba. Formato para cada uno:\nSIMBOLO | NOMBRE | justificacion en 1 oracion\n\nMaximo 800 palabras. Sin asteriscos ni markdown."
     body = json.dumps({
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 1500,
@@ -152,129 +136,70 @@ Se directo, usa datos concretos. Maximo 800 palabras en total."""
         data = json.loads(resp.read())
     return data["content"][0]["text"]
 
-def parse_opportunities(analysis):
-    """Extrae la seccion de oportunidades del analisis."""
-    lines = analysis.split("\n")
-    in_section = False
-    opportunities = []
-    for line in lines:
-        line = line.strip()
-        if "OPORTUNIDADES DEL DIA" in line.upper():
-            in_section = True
+def parse_sections(analysis):
+    sections = ["RESUMEN EJECUTIVO", "MERCADOS GLOBALES", "COMMODITIES Y DIVISAS",
+                "PERSPECTIVA PARA LA JORNADA", "CARTERA PERSONAL", "PUNTO DE ATENCION"]
+    main_html = ""
+    opp_rows = ""
+    opp_count = 0
+    in_opps = False
+
+    for line in analysis.split("\n"):
+        line = clean(line)
+        if not line:
             continue
-        if in_section:
-            if line and line[0].isdigit() and ". " in line[:3] and "OPORTUNIDADES" not in line.upper():
+        if "OPORTUNIDADES DEL DIA" in line.upper():
+            in_opps = True
+            continue
+        if in_opps:
+            if "|" in line and opp_count < 5:
+                parts = [p.strip() for p in line.split("|")]
+                if len(parts) >= 3:
+                    simbolo = parts[0]
+                    nombre  = parts[1]
+                    justif  = parts[2]
+                elif len(parts) == 2:
+                    simbolo = parts[0]
+                    nombre  = ""
+                    justif  = parts[1]
+                else:
+                    continue
+                activo = simbolo + (" - " + nombre if nombre else "")
+                opp_rows += "<tr style='border-bottom:1px solid #bbf7d0'><td style='padding:10px 14px;font-weight:700;color:#15803d;white-space:nowrap;vertical-align:top'>" + activo + "</td><td style='padding:10px 14px;color:#334155;line-height:1.6'>" + justif + "</td></tr>"
+                opp_count += 1
+            continue
+        is_header = False
+        for s in sections:
+            if s in line.upper():
+                is_header = True
+                title = line.rstrip(":")
+                main_html += "<h3 style='margin:18px 0 4px;font-size:12px;font-weight:700;color:#1e3a5f;text-transform:uppercase;letter-spacing:1px'>" + title + "</h3>"
                 break
-            if line and " - " in line and ":" in line:
-                opportunities.append(line)
-            elif line and opportunities and not any(h in line.upper() for h in ["RESUMEN", "MERCADOS", "COMMODITIES", "PERSPECTIVA", "CARTERA", "PUNTO"]):
-                if len(opportunities) > 0 and not line[0].isdigit():
-                    opportunities[-1] += " " + line
-    return opportunities[:5]
+        if not is_header:
+            main_html += "<p style='margin:4px 0;color:#334155;line-height:1.7;font-size:14px'>" + line + "</p>"
+
+    if not opp_rows:
+        opp_rows = "<tr><td colspan='2' style='padding:10px 14px;color:#64748b'>No se generaron oportunidades hoy.</td></tr>"
+
+    return main_html, opp_rows
 
 def build_email(analysis, market, news):
     now = datetime.now(ARGENTINA_TZ)
     date_str = now.strftime("%d/%m/%Y")
     time_str = now.strftime("%H:%M")
-
     rows = ""
     for name, d in market.items():
         if d:
             color = "#16a34a" if d["change"] >= 0 else "#dc2626"
+            bg    = "#f0fdf4" if d["change"] >= 0 else "#fef2f2"
             arrow = "▲" if d["change"] >= 0 else "▼"
-            rows += "<tr><td style='padding:6px 12px;font-weight:600;color:#1e293b'>" + name + "</td><td style='padding:6px 12px;text-align:right;color:#1e293b'>" + str(round(d["price"], 2)) + "</td><td style='padding:6px 12px;text-align:right;color:" + color + ";font-weight:700'>" + arrow + " " + str(round(abs(d["pct"]), 2)) + "%</td></tr>"
-
+            rows += "<tr style='border-bottom:1px solid #e2e8f0'><td style='padding:7px 14px;font-weight:600;color:#1e293b;font-size:13px'>" + name + "</td><td style='padding:7px 14px;text-align:right;color:#1e293b;font-size:13px'>" + str(round(d["price"], 2)) + "</td><td style='padding:7px 14px;text-align:right;color:" + color + ";font-weight:700;background:" + bg + ";font-size:13px'>" + arrow + " " + str(round(abs(d["pct"]), 2)) + "%</td></tr>"
     news_items = ""
     for a in news[:8]:
-        news_items += "<li style='margin-bottom:8px'><a href='" + a["url"] + "' style='color:#2563eb;font-weight:600'>" + a["title"] + "</a> <span style='color:#64748b;font-size:12px'>- " + a["source"] + "</span></li>"
-
-    # Separar analisis principal de oportunidades
-    analysis_main = ""
-    opportunities_raw = []
-    in_opps = False
-    for line in analysis.split("\n"):
-        line_stripped = line.strip()
-        if "OPORTUNIDADES DEL DIA" in line_stripped.upper():
-            in_opps = True
-            continue
-        if in_opps:
-            if line_stripped:
-                opportunities_raw.append(line_stripped)
-        else:
-            if line_stripped:
-                analysis_main += "<p style='margin:6px 0;color:#334155;line-height:1.7'>" + line_stripped + "</p>"
-
-    # Construir filas de oportunidades
-    opp_rows = ""
-    opp_count = 0
-    for line in opportunities_raw:
-        if opp_count >= 5:
-            break
-        if " - " in line or ":" in line:
-            parts = line.split(":", 1)
-            if len(parts) == 2:
-                activo = parts[0].strip().lstrip("0123456789. ")
-                justif = parts[1].strip()
-                opp_rows += "<tr><td style='padding:10px 12px;font-weight:700;color:#15803d;vertical-align:top;white-space:nowrap'>" + activo + "</td><td style='padding:10px 12px;color:#334155;line-height:1.6'>" + justif + "</td></tr>"
-                opp_count += 1
-
-    if not opp_rows:
-        opp_rows = "<tr><td colspan='2' style='padding:10px 12px;color:#64748b'>Ver analisis principal para oportunidades del dia.</td></tr>"
-
+        news_items += "<li style='margin-bottom:10px;font-size:13px'><a href='" + a["url"] + "' style='color:#2563eb;font-weight:600;text-decoration:none'>" + a["title"] + "</a><br><span style='color:#64748b;font-size:12px'>" + a["source"] + "</span></li>"
+    main_html, opp_rows = parse_sections(analysis)
     subject = "Reporte de Mercados - " + date_str
-
-    html = """<!DOCTYPE html>
-<html>
-<body style='font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:0'>
-<div style='max-width:660px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)'>
-
-<div style='background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);padding:32px 36px'>
-<div style='font-size:11px;color:#94a3b8;letter-spacing:3px;text-transform:uppercase;margin-bottom:8px'>Reporte Diario de Mercados</div>
-<div style='font-size:26px;font-weight:700;color:#fff;margin-bottom:4px'>Market Intelligence</div>
-<div style='font-size:13px;color:#7dd3fc'>""" + date_str + """ &middot; """ + time_str + """ hs (Argentina)</div>
-</div>
-
-<div style='padding:28px 36px 0'>
-<h2 style='font-size:12px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin:0 0 14px'>Snapshot de Mercado</h2>
-<table style='width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px'>
-<thead><tr style='background:#e2e8f0'>
-<th style='padding:8px 12px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase'>Activo</th>
-<th style='padding:8px 12px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Precio</th>
-<th style='padding:8px 12px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Variacion</th>
-</tr></thead>
-<tbody>""" + rows + """</tbody>
-</table>
-</div>
-
-<div style='padding:28px 36px'>
-<h2 style='font-size:12px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin:0 0 14px'>Analisis y Perspectivas</h2>
-<div style='background:#f8fafc;border-left:4px solid #2563eb;border-radius:0 8px 8px 0;padding:20px 24px'>""" + analysis_main + """</div>
-</div>
-
-<div style='padding:0 36px 28px'>
-<h2 style='font-size:12px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin:0 0 14px'>Oportunidades del Dia</h2>
-<table style='width:100%;border-collapse:collapse;background:#f0fdf4;border-radius:8px;overflow:hidden'>
-<thead><tr style='background:#bbf7d0'>
-<th style='padding:8px 12px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase'>Activo</th>
-<th style='padding:8px 12px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase'>Justificacion</th>
-</tr></thead>
-<tbody>""" + opp_rows + """</tbody>
-</table>
-<p style='font-size:11px;color:#94a3b8;margin:8px 0 0'>Este cuadro es orientativo y no constituye recomendacion de inversion.</p>
-</div>
-
-<div style='padding:0 36px 28px'>
-<h2 style='font-size:12px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin:0 0 14px'>Noticias Destacadas</h2>
-<ul style='padding-left:16px;margin:0'>""" + news_items + """</ul>
-</div>
-
-<div style='background:#f8fafc;padding:20px 36px;text-align:center;border-top:1px solid #e2e8f0'>
-<p style='font-size:11px;color:#94a3b8;margin:0'>Generado por Market Intelligence Agent &middot; Powered by Claude AI<br>Este reporte es informativo y no constituye asesoramiento financiero.</p>
-</div>
-
-</div>
-</body></html>"""
-
+    html = "<!DOCTYPE html><html><body style='font-family:Arial,sans-serif;background:#f1f5f9;margin:0;padding:16px 0'><div style='max-width:620px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.10)'><div style='background:linear-gradient(135deg,#0f172a 0%,#1e3a5f 100%);padding:28px 32px'><div style='font-size:11px;color:#94a3b8;letter-spacing:3px;text-transform:uppercase;margin-bottom:6px'>Reporte Diario de Mercados</div><div style='font-size:24px;font-weight:700;color:#fff;margin-bottom:4px'>Market Intelligence</div><div style='font-size:13px;color:#7dd3fc'>" + date_str + " &middot; " + time_str + " hs (Argentina)</div></div><div style='padding:24px 32px 0'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Snapshot de Mercado</div><table style='width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #e2e8f0'><thead><tr style='background:#e2e8f0'><th style='padding:8px 14px;text-align:left;font-size:11px;color:#64748b;text-transform:uppercase'>Activo</th><th style='padding:8px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Precio</th><th style='padding:8px 14px;text-align:right;font-size:11px;color:#64748b;text-transform:uppercase'>Variacion</th></tr></thead><tbody>" + rows + "</tbody></table></div><div style='padding:24px 32px'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Analisis y Perspectivas</div><div style='background:#f8fafc;border-left:4px solid #2563eb;border-radius:0 8px 8px 0;padding:18px 22px'>" + main_html + "</div></div><div style='padding:0 32px 24px'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Oportunidades del Dia</div><table style='width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;border:1px solid #bbf7d0'><thead><tr style='background:#dcfce7'><th style='padding:8px 14px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase;white-space:nowrap'>Activo</th><th style='padding:8px 14px;text-align:left;font-size:11px;color:#15803d;text-transform:uppercase'>Justificacion</th></tr></thead><tbody>" + opp_rows + "</tbody></table><p style='font-size:11px;color:#94a3b8;margin:8px 0 0'>Orientativo. No constituye recomendacion de inversion.</p></div><div style='padding:0 32px 24px'><div style='font-size:11px;font-weight:700;color:#64748b;letter-spacing:2px;text-transform:uppercase;margin-bottom:12px'>Noticias Destacadas</div><ul style='padding-left:18px;margin:0'>" + news_items + "</ul></div><div style='background:#f8fafc;padding:18px 32px;text-align:center;border-top:1px solid #e2e8f0'><p style='font-size:11px;color:#94a3b8;margin:0'>Generado por Market Intelligence Agent &middot; Powered by Claude AI<br>Este reporte es informativo y no constituye asesoramiento financiero.</p></div></div></body></html>"
     return subject, html
 
 def send_email(subject, html):
