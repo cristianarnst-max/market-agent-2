@@ -2,8 +2,8 @@ name: Market Intelligence Agent
 
 on:
   schedule:
-    - cron: "0 8 * * 1-5"
-    - cron: "0 10 * * 0,6"
+    - cron: "17 8 * * 1-5"
+    - cron: "17 10 * * 0,6"
   workflow_dispatch:
 
 jobs:
